@@ -2,14 +2,14 @@
   "schemaVersion": "1.0",
   "uuid": "@aspen/netease-music",
   "name": "NeteaseMusic",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "repo": "https://github.com/ENIAC-Tech/flexplugin-v2-netease-music",
   "description": "Netease Cloud Music controls and lyric display for FlexStudio.",
   "author": {
     "name": "Aspen"
   },
   "minHostVersion": "1.0.0",
-  "native": false,
+  "native": true,
   "platforms": [
     "win32-x64"
   ],
@@ -29,7 +29,7 @@
   "dependencies": [
     {
       "uuid": "@aspen/netease-music-link-essentials",
-      "minVersion": "1.0.0"
+      "minVersion": "1.0.1"
     }
   ],
   "hasConfigPage": true,
