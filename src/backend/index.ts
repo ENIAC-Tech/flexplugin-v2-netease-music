@@ -1,0 +1,440 @@
+import { FlexPluginBase } from '@flexsdk/runtime';
+import type { PluginDefinitionsPayload, PluginEventEnvelope, PluginLoadContext } from '@flexsdk/types';
+import {
+  createDefaultUnitData,
+  DEFAULT_PLAYBACK_STATE,
+  type PlaybackState,
+  PLUGIN_UUID,
+  type PlayerCommand,
+  UNIT_DEFINITIONS,
+  type ViewKind
+} from '../common/netease';
+import {
+  NETEASE_LINK_METHODS,
+  NETEASE_LINK_PLUGIN_UUID,
+  type NeteaseLinkConnectionStatus,
+  type NeteaseLinkRpcResult
+} from '../common/netease-link';
+
+interface LoadedCycledUnitSlot {
+  uuid: string;
+  serialNumber: string;
+}
+
+const CONTROL_COMMANDS: Partial<Record<ViewKind, PlayerCommand>> = {
+  previous: 'previous',
+  next: 'next',
+  'play-mode': 'togglePlayMode',
+  'play-pause': 'togglePlayPause'
+};
+const PLAYBACK_SYNC_INTERVAL_MS = 1000;
+
+function clonePlaybackState(state: PlaybackState): PlaybackState {
+  return JSON.parse(JSON.stringify(state)) as PlaybackState;
+}
+
+function createInitialPlaybackState(): PlaybackState {
+  return {
+    ...clonePlaybackState(DEFAULT_PLAYBACK_STATE),
+    lastUpdatedAt: Date.now()
+  };
+}
+
+export default class NeteaseMusicPlugin extends FlexPluginBase {
+  private state: PlaybackState = createInitialPlaybackState();
+  private cycledUnitSlots = new Map<ViewKind, Map<string, LoadedCycledUnitSlot>>();
+  private warnedSetFunctionUnavailable = false;
+  private playbackSyncTimer: NodeJS.Timeout | null = null;
+  private playbackSyncInFlight = false;
+  private lastLinkErrorMessage: string | null = null;
+  private unloaded = false;
+
+  async getDefinitions(): Promise<PluginDefinitionsPayload> {
+    const pluginVersion = this.pluginVersion || '1.0.0';
+
+    return {
+      libraries: [
+        this.createDefaultLibrary({
+          libraryUUID: PLUGIN_UUID,
+          name: 'NeteaseMusic',
+          icon: 'mdi-music-circle',
+          categoryId: 'music'
+        })
+      ],
+      units: UNIT_DEFINITIONS.map((unit) => {
+        const isCustomUnit = unit.pluginType === 'custom';
+        const definition = this.createUnitTemplate({
+          unitId: unit.unitId,
+          typeId: unit.typeId,
+          name: unit.name,
+          categoryId: 'music',
+          icon: unit.icon,
+          hasFunctionEditor: isCustomUnit,
+          hasAppearanceEditor: isCustomUnit,
+          hasView: isCustomUnit,
+          platforms: ['win32'],
+          libraryUUID: PLUGIN_UUID,
+          plugin: {
+            type: unit.pluginType as any,
+            pluginUUID: PLUGIN_UUID,
+            pluginVersion,
+            unitId: unit.unitId
+          },
+          defaultData: createDefaultUnitData(unit.unitId)
+        } as any) as any;
+
+        if (unit.functions) {
+          definition.functions = unit.functions;
+        }
+        if (unit.appearanceOverride) {
+          definition.appearanceOverride = unit.appearanceOverride;
+        }
+        return definition;
+      }) as any,
+      revision: pluginVersion
+    };
+  }
+
+  async onLoad(ctx: PluginLoadContext): Promise<void> {
+    await super.onLoad(ctx);
+    this.unloaded = false;
+
+    this.registerRendererRpc('getPlaybackState', async () => this.getPlaybackStateForRenderer());
+    this.registerRendererRpc('getConnectionStatus', async () => this.getConnectionStatusForRenderer());
+    this.registerRendererRpc('sendPlayerCommand', async (command: PlayerCommand) => this.handlePlayerCommand(command));
+    this.registerRendererRpc('installFlexLinkPlugin', async () =>
+      this.callLinkApi<NeteaseLinkRpcResult>(NETEASE_LINK_METHODS.installFlexLinkPlugin)
+    );
+    this.registerRendererRpc('openExternalUrl', async (url: string) =>
+      this.callLinkApi<NeteaseLinkRpcResult>(NETEASE_LINK_METHODS.openExternalUrl, [url])
+    );
+    this.registerRendererRpc('reportUnitViewDiagnostic', async (diagnostic: Record<string, any>) =>
+      this.reportUnitViewDiagnostic(diagnostic)
+    );
+
+    for (const unit of UNIT_DEFINITIONS) {
+      const command = CONTROL_COMMANDS[unit.unitId];
+      if (!command) continue;
+      await this.onUnitEvent(unit.typeId, 'pressed', async (event: PluginEventEnvelope) => {
+        this.logger.debug('Control unit pressed', { typeId: unit.typeId, payload: event.payload });
+        await this.handlePlayerCommand(command);
+      });
+    }
+
+    for (const unit of UNIT_DEFINITIONS) {
+      if (unit.pluginType !== 'cycled') continue;
+      await this.onUnitEvent(
+        unit.typeId,
+        'load',
+        async (event: PluginEventEnvelope) => this.handleCycledUnitLoad(unit.unitId, event),
+        { snapshot: true }
+      );
+      await this.onUnitEvent(unit.typeId, 'unload', async (event: PluginEventEnvelope) =>
+        this.handleCycledUnitUnload(unit.unitId, event)
+      );
+    }
+
+    this.startPlaybackSync();
+    void this.refreshPlaybackStateFromLink('load', { ensureConnected: true });
+  }
+
+  async onUnload(): Promise<void> {
+    this.unloaded = true;
+    this.clearPlaybackSyncTimer();
+    this.cycledUnitSlots.clear();
+    await super.onUnload();
+  }
+
+  private async getPlaybackStateForRenderer(): Promise<PlaybackState> {
+    await this.refreshPlaybackStateFromLink('renderer', { ensureConnected: true });
+    return clonePlaybackState(this.state);
+  }
+
+  private async getConnectionStatusForRenderer(): Promise<NeteaseLinkConnectionStatus> {
+    try {
+      return await this.callLinkApi<NeteaseLinkConnectionStatus>(NETEASE_LINK_METHODS.getConnectionStatus, [
+        { connect: true }
+      ]);
+    } catch (error) {
+      const message = this.describeError(error);
+      this.applyLinkError(message, 'connection-status');
+      return {
+        connected: false,
+        currentSong: null,
+        lastUpdatedAt: this.state.lastUpdatedAt,
+        error: this.state.connectionError,
+        webSocketUrl: undefined
+      };
+    }
+  }
+
+  private async handlePlayerCommand(command: PlayerCommand): Promise<NeteaseLinkRpcResult> {
+    try {
+      const result = await this.callLinkApi<NeteaseLinkRpcResult>(NETEASE_LINK_METHODS.sendPlayerCommand, [command]);
+      if (result.success) {
+        setTimeout(() => {
+          void this.refreshPlaybackStateFromLink('command', { ensureConnected: true });
+        }, 160);
+      }
+      return result;
+    } catch (error) {
+      const message = this.describeError(error);
+      this.applyLinkError(message, 'command');
+      return { success: false, error: this.state.connectionError ?? message };
+    }
+  }
+
+  private async reportUnitViewDiagnostic(diagnostic: Record<string, any>): Promise<NeteaseLinkRpcResult> {
+    const payload: Record<string, any> = {
+      ...this.normalizeUnitViewDiagnostic(diagnostic),
+      sourcePluginUUID: PLUGIN_UUID
+    };
+    try {
+      return await this.callLinkApi<NeteaseLinkRpcResult>(NETEASE_LINK_METHODS.reportDiagnostic, [payload]);
+    } catch (error) {
+      this.logger.debug('Failed to forward unit view diagnostic to dependency plugin', {
+        error: this.describeError(error),
+        event: payload.event
+      });
+      return { success: false, error: this.describeError(error) };
+    }
+  }
+
+  private normalizeUnitViewDiagnostic(diagnostic: Record<string, any>): Record<string, any> {
+    return {
+      event: this.readString(diagnostic?.event) ?? 'unknown',
+      viewKind: this.readString(diagnostic?.viewKind),
+      songName: this.readString(diagnostic?.songName),
+      coverSourceKind: this.readString(diagnostic?.coverSourceKind),
+      coverSourceLength: Number(diagnostic?.coverSourceLength ?? 0),
+      coverPreview: this.readString(diagnostic?.coverPreview)?.slice(0, 120) ?? null,
+      error: this.readString(diagnostic?.error)
+    };
+  }
+
+  private startPlaybackSync(): void {
+    this.clearPlaybackSyncTimer();
+    this.playbackSyncTimer = setInterval(() => {
+      void this.refreshPlaybackStateFromLink('poll', { ensureConnected: true });
+    }, PLAYBACK_SYNC_INTERVAL_MS);
+  }
+
+  private clearPlaybackSyncTimer(): void {
+    if (!this.playbackSyncTimer) return;
+    clearInterval(this.playbackSyncTimer);
+    this.playbackSyncTimer = null;
+  }
+
+  private async refreshPlaybackStateFromLink(
+    source: string,
+    options: { ensureConnected?: boolean }
+  ): Promise<boolean> {
+    if (this.unloaded || this.playbackSyncInFlight) return false;
+
+    this.playbackSyncInFlight = true;
+    const cycledStateBefore = this.getCycledStateSignature();
+    try {
+      const nextState = await this.callLinkApi<PlaybackState>(NETEASE_LINK_METHODS.getPlaybackState, [options]);
+      this.state = this.normalizePlaybackState(nextState);
+      this.lastLinkErrorMessage = null;
+      if (this.getCycledStateSignature() !== cycledStateBefore) {
+        await this.syncAllCycledUnitStates();
+      }
+      return true;
+    } catch (error) {
+      this.applyLinkError(this.describeError(error), source);
+      if (this.getCycledStateSignature() !== cycledStateBefore) {
+        await this.syncAllCycledUnitStates();
+      }
+      return false;
+    } finally {
+      this.playbackSyncInFlight = false;
+    }
+  }
+
+  private normalizePlaybackState(value: PlaybackState): PlaybackState {
+    const record = this.asRecord(value) ?? {};
+    const timeline = this.asRecord(record.timeline);
+    const playMode = this.asRecord(record.playMode);
+    const lastUpdatedAt = Number(record.lastUpdatedAt ?? Date.now());
+    return {
+      ...clonePlaybackState(DEFAULT_PLAYBACK_STATE),
+      ...record,
+      connected: Boolean(record.connected),
+      song: (record.song as PlaybackState['song']) ?? null,
+      playState: this.readString(record.playState) ?? 'Stopped',
+      timeline: {
+        currentTime: Number(timeline?.currentTime ?? 0),
+        totalTime: Number(timeline?.totalTime ?? 0)
+      },
+      playMode: {
+        isShuffling: Boolean(playMode?.isShuffling),
+        repeatMode: String(playMode?.repeatMode ?? 'Off')
+      },
+      lyrics: (record.lyrics as PlaybackState['lyrics']) ?? null,
+      currentLyric: (record.currentLyric as PlaybackState['currentLyric']) ?? null,
+      lastUpdatedAt: Number.isFinite(lastUpdatedAt) ? lastUpdatedAt : Date.now(),
+      connectionError: this.readString(record.connectionError)
+    };
+  }
+
+  private applyLinkError(message: string, source: string): void {
+    const connectionError = `NeteaseMusicLinkEssentials unavailable: ${message}`;
+    this.state = {
+      ...clonePlaybackState(DEFAULT_PLAYBACK_STATE),
+      lastUpdatedAt: Date.now(),
+      connectionError
+    };
+
+    if (connectionError === this.lastLinkErrorMessage) return;
+    this.lastLinkErrorMessage = connectionError;
+    this.logger.warn('Failed to read NeteaseMusicLinkEssentials dependency API', {
+      source,
+      dependency: NETEASE_LINK_PLUGIN_UUID,
+      error: message
+    });
+  }
+
+  private async callLinkApi<T>(method: string, params: any[] = []): Promise<T> {
+    return await this.hostApi.plugin.callDependency<T>(NETEASE_LINK_PLUGIN_UUID, method, params);
+  }
+
+  private handleCycledUnitLoad(viewKind: ViewKind, event: PluginEventEnvelope): void {
+    const slot = this.readLoadedUnitSlot(event);
+    if (!slot) {
+      this.logger.debug('Ignored cycled unit load without slot identity', {
+        viewKind,
+        payload: event.payload
+      });
+      return;
+    }
+
+    this.getCycledSlots(viewKind).set(this.getSlotKey(slot), slot);
+    void this.syncCycledUnitState(viewKind, slot);
+  }
+
+  private handleCycledUnitUnload(viewKind: ViewKind, event: PluginEventEnvelope): void {
+    const slot = this.readLoadedUnitSlot(event);
+    if (!slot) return;
+    this.cycledUnitSlots.get(viewKind)?.delete(this.getSlotKey(slot));
+  }
+
+  private readLoadedUnitSlot(event: PluginEventEnvelope): LoadedCycledUnitSlot | null {
+    const outer = this.asRecord(event.payload);
+    const payload = this.asRecord(outer?.payload) ?? outer;
+    const context = this.asRecord(outer?.context);
+    const uuid = this.readString(payload?.uuid);
+    const serialNumber = this.readString(payload?.serialNumber) ?? this.readString(context?.serialNumber);
+    if (!uuid || !serialNumber) return null;
+    return { uuid, serialNumber };
+  }
+
+  private asRecord(value: unknown): Record<string, any> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, any>)
+      : null;
+  }
+
+  private readString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  private getCycledSlots(viewKind: ViewKind): Map<string, LoadedCycledUnitSlot> {
+    let slots = this.cycledUnitSlots.get(viewKind);
+    if (!slots) {
+      slots = new Map<string, LoadedCycledUnitSlot>();
+      this.cycledUnitSlots.set(viewKind, slots);
+    }
+    return slots;
+  }
+
+  private getSlotKey(slot: LoadedCycledUnitSlot): string {
+    return `${slot.serialNumber}\u0000${slot.uuid}`;
+  }
+
+  private getCycledStateSignature(): string {
+    return [
+      this.resolvePlayPauseFunctionId(),
+      this.resolvePlayModeFunctionId()
+    ].join('|');
+  }
+
+  private resolvePlayPauseFunctionId(): string {
+    const playState = String(this.state.playState ?? '').toLowerCase();
+    const isPlaying =
+      playState.includes('play') &&
+      !playState.includes('pause') &&
+      !playState.includes('stop');
+    return isPlaying ? 'pause' : 'play';
+  }
+
+  private resolvePlayModeFunctionId(): string {
+    if (this.state.playMode?.isShuffling) return 'shuffle';
+    switch (this.state.playMode?.repeatMode) {
+      case 'List':
+        return 'repeat-list';
+      case 'Track':
+      case 'One':
+      case 'Single':
+        return 'repeat-one';
+      default:
+        return 'sequential';
+    }
+  }
+
+  private resolveCycledFunctionId(viewKind: ViewKind): string | null {
+    switch (viewKind) {
+      case 'play-pause':
+        return this.resolvePlayPauseFunctionId();
+      case 'play-mode':
+        return this.resolvePlayModeFunctionId();
+      default:
+        return null;
+    }
+  }
+
+  private async syncAllCycledUnitStates(): Promise<void> {
+    await Promise.all([
+      this.syncCycledUnitState('play-pause'),
+      this.syncCycledUnitState('play-mode')
+    ]);
+  }
+
+  private async syncCycledUnitState(viewKind: ViewKind, slot?: LoadedCycledUnitSlot): Promise<void> {
+    const functionId = this.resolveCycledFunctionId(viewKind);
+    if (!functionId) return;
+    const targets = slot ? [slot] : Array.from(this.cycledUnitSlots.get(viewKind)?.values() ?? []);
+    await Promise.all(targets.map((target) => this.setCycledUnitFunction(viewKind, target, functionId)));
+  }
+
+  private async setCycledUnitFunction(
+    viewKind: ViewKind,
+    slot: LoadedCycledUnitSlot,
+    functionId: string
+  ): Promise<void> {
+    const unitApi = (this.hostApi as any)?.unit;
+    if (typeof unitApi?.setFunction !== 'function') {
+      if (!this.warnedSetFunctionUnavailable) {
+        this.warnedSetFunctionUnavailable = true;
+        this.logger.warn('Host API unit.setFunction is unavailable; cycled unit state sync is disabled');
+      }
+      return;
+    }
+
+    try {
+      await unitApi.setFunction(slot.serialNumber, slot.uuid, functionId);
+    } catch (error) {
+      this.logger.debug('Failed to sync cycled unit function', {
+        viewKind,
+        uuid: slot.uuid,
+        serialNumber: slot.serialNumber,
+        functionId,
+        error: this.describeError(error)
+      });
+    }
+  }
+
+  private describeError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+}

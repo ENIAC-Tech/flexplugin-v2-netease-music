@@ -1,0 +1,9 @@
+{
+  "@aspen/netease-music.nowPlaying.name": "Now Playing",
+  "@aspen/netease-music.lyrics.name": "Lyrics",
+  "@aspen/netease-music.playPause.name": "Play / Pause",
+  "@aspen/netease-music.previous.name": "Previous",
+  "@aspen/netease-music.next.name": "Next",
+  "@aspen/netease-music.playMode.name": "Play Mode",
+  "@aspen/netease-music.config.title": "NeteaseMusic Setup"
+}

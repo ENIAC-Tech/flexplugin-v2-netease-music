@@ -1,0 +1,239 @@
+html,
+body,
+#app {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden auto;
+}
+
+:root {
+  --netease-red: #e60026;
+  --netease-red-rgb: 230, 0, 38;
+}
+
+.v-application.flex-plugin-app,
+.flex-plugin-app .v-application__wrap {
+  min-height: 100vh;
+  background: transparent;
+}
+
+.plugin-page {
+  width: 100%;
+  max-width: 1040px;
+}
+
+.plugin-titlebar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.plugin-title-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.1);
+  border: 1px solid rgba(var(--v-theme-primary), 0.18);
+}
+
+.plugin-title-icon.netease-accent {
+  color: var(--netease-red);
+  background: rgba(var(--netease-red-rgb), 0.1);
+  border-color: rgba(var(--netease-red-rgb), 0.2);
+}
+
+.plugin-title-stack {
+  min-width: 0;
+}
+
+.plugin-title-stack h1,
+.plugin-title-stack h2,
+.plugin-title-stack p {
+  margin: 0;
+}
+
+.plugin-title-stack h1,
+.plugin-title-stack h2 {
+  font-size: 18px;
+  line-height: 1.25;
+  font-weight: 650;
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.plugin-title-stack p,
+.plugin-muted {
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.plugin-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.plugin-grid.two {
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.85fr);
+}
+
+.plugin-panel {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 8px;
+  background: rgba(var(--v-theme-surface), 0.86);
+  overflow: hidden;
+}
+
+.plugin-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  background: rgba(var(--v-theme-on-surface), 0.025);
+}
+
+.plugin-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 620;
+  font-size: 13px;
+}
+
+.plugin-panel-body {
+  padding: 12px;
+}
+
+.plugin-step-list,
+.plugin-row-list {
+  display: grid;
+}
+
+.plugin-step-row,
+.plugin-data-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.plugin-step-row:last-child,
+.plugin-data-row:last-child {
+  border-bottom: 0;
+}
+
+.plugin-step-copy,
+.plugin-data-copy {
+  min-width: 0;
+}
+
+.plugin-step-title,
+.plugin-data-title {
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1.35;
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.plugin-step-body,
+.plugin-data-value {
+  margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: 12px;
+  line-height: 1.42;
+}
+
+.plugin-step-action {
+  justify-self: end;
+}
+
+.plugin-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.plugin-section {
+  display: grid;
+  gap: 10px;
+}
+
+.plugin-section + .plugin-section {
+  margin-top: 14px;
+}
+
+.plugin-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 28px;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.plugin-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.plugin-spin {
+  animation: plugin-spin 1s linear infinite;
+}
+
+@keyframes plugin-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 760px) {
+  .plugin-titlebar {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .plugin-toolbar-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .plugin-grid.two,
+  .plugin-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .plugin-step-row,
+  .plugin-data-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .plugin-step-action {
+    grid-column: 2;
+    justify-self: start;
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "1.0",
+  "uuid": "@aspen/netease-music",
+  "name": "NeteaseMusic",
+  "version": "1.0.0",
+  "repo": "https://github.com/ENIAC-Tech/flexplugin-v2-netease-music",
+  "description": "Netease Cloud Music controls and lyric display for FlexStudio.",
+  "author": {
+    "name": "Aspen"
+  },
+  "minHostVersion": "1.0.0",
+  "native": false,
+  "platforms": [
+    "win32-x64"
+  ],
+  "devices": [
+    "flow2pro",
+    "flexbar",
+    "flex2"
+  ],
+  "requiredCapabilities": [],
+  "permissions": [
+    "logger",
+    "definitions",
+    "unit",
+    "ui",
+    "pluginApi"
+  ],
+  "dependencies": [
+    {
+      "uuid": "@aspen/netease-music-link-essentials",
+      "minVersion": "1.0.0"
+    }
+  ],
+  "hasConfigPage": true,
+  "entry": {
+    "backend": "src/backend/index.js",
+    "unitFunctionEditor": "src/frontend/unit-function-editor.html",
+    "unitAppearanceEditor": "src/frontend/unit-appearance-editor.html",
+    "unitView": "src/frontend/unit-view.html",
+    "configPage": "src/frontend/config-page.html"
+  },
+  "defaultLocale": "en",
+  "supportedLocales": [
+    "en"
+  ]
+}
