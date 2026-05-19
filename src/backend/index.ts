@@ -115,8 +115,8 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
     for (const unit of UNIT_DEFINITIONS) {
       const command = CONTROL_COMMANDS[unit.unitId];
       if (!command) continue;
-      await this.onUnitEvent(unit.typeId, 'pressed', async (event: PluginEventEnvelope) => {
-        this.logger.debug('Control unit pressed', { typeId: unit.typeId, payload: event.payload });
+      await this.onUnitEvent(unit.typeId, 'changed' as any, async (event: PluginEventEnvelope) => {
+        this.logger.debug('Control unit changed', { typeId: unit.typeId, payload: event.payload });
         await this.handlePlayerCommand(command);
       });
     }
