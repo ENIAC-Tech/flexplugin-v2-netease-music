@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { useFlexBridge } from '@flexsdk/runtime';
+import { useFlexBridge } from '@flexsdk/runtime/vue';
 
 const { isReady, bridge, language } = useFlexBridge();
 const unitName = ref('');
@@ -69,15 +69,15 @@ const enText = {
 
 const zhText = {
   title: '外观',
-  subtitle: '设置变更会自动同步。',
+  subtitle: '设置变更会自动同步�?,
   unitName: 'Unit 名称',
-  defaultUnitName: '网易云音乐',
+  defaultUnitName: '网易云音�?,
   unitNames: {
     'now-playing': '当前播放',
     lyrics: '歌词',
     'play-pause': '播放 / 暂停',
-    previous: '上一曲',
-    next: '下一曲',
+    previous: '上一�?,
+    next: '下一�?,
     'play-mode': '播放模式'
   }
 };

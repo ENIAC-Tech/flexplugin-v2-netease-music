@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { useFlexBridge } from '@flexsdk/runtime';
+import { useFlexBridge } from '@flexsdk/runtime/vue';
 import {
   coverImageSource,
   DEFAULT_PLAYBACK_STATE,
@@ -280,8 +280,8 @@ const zhText = {
   noLyrics: '暂无歌词',
   play: '播放',
   pause: '暂停',
-  previous: '上一曲',
-  next: '下一曲',
+  previous: '上一�?,
+  next: '下一�?,
   commandFailed: '命令执行失败',
   coverFailed: '封面加载失败',
   playModes: {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { useFlexBridge } from '@flexsdk/runtime';
+import { useFlexBridge } from '@flexsdk/runtime/vue';
 import { normalizeUnitSettings, type AlignOption, type UnitSettings } from '../common/netease';
 import PluginColorPickerField from './PluginColorPickerField.vue';
 import { getLyricPositionLimits, getUnitPixelSize, type UnitPixelSize } from './unit-view-model';
@@ -174,23 +174,23 @@ const enText = {
 
 const zhText = {
   title: 'Unit 功能',
-  subtitle: '设置变更会自动同步。',
+  subtitle: '设置变更会自动同步�?,
   nowPlaying: '当前播放',
   lyrics: '歌词',
   controls: '控制按键',
-  primaryLyric: '主歌词',
-  secondaryLyric: '副歌词',
+  primaryLyric: '主歌�?,
+  secondaryLyric: '副歌�?,
   common: '通用',
-  defaultUnitName: '网易云音乐',
+  defaultUnitName: '网易云音�?,
   enabled: '启用',
   x: 'X 位置',
   y: 'Y 位置',
   size: '大小',
   color: '颜色',
   align: '对齐方式',
-  alignLeft: '左对齐',
+  alignLeft: '左对�?,
   alignCenter: '居中',
-  alignRight: '右对齐',
+  alignRight: '右对�?,
   highlightColor: '高亮颜色',
   showTitle: '歌曲标题',
   showArtist: '艺人',
@@ -201,8 +201,8 @@ const zhText = {
     'now-playing': '当前播放',
     lyrics: '歌词',
     'play-pause': '播放 / 暂停',
-    previous: '上一曲',
-    next: '下一曲',
+    previous: '上一�?,
+    next: '下一�?,
     'play-mode': '播放模式'
   }
 };

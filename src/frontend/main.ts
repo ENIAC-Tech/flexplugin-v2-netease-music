@@ -5,7 +5,7 @@ import * as directives from 'vuetify/directives';
 import 'vuetify/styles';
 import '@mdi/font/css/materialdesignicons.css';
 import './plugin-ui.css';
-import { mountFlexPage } from '@flexsdk/runtime';
+import { mountFlexPage } from '@flexsdk/runtime/vue';
 import UnitFunctionEditor from './UnitFunctionEditor.vue';
 import UnitAppearanceEditor from './UnitAppearanceEditor.vue';
 import UnitView from './UnitView.vue';
