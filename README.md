@@ -4,6 +4,20 @@ Netease Cloud Music controls and lyric display for FlexStudio. This v2 plugin us
 
 The Netease FlexLink communication layer is provided by the dependency plugin `@aspen/netease-music-link-essentials`.
 
+## Event-driven playback state
+
+Playback state follows one push-only path:
+
+```text
+BetterNCM FlexLink WebSocket
+  -> NeteaseMusicLinkEssentials `playback` Dependency State Channel
+  -> NeteaseMusic backend local state
+  -> Host Unit APIs -> device
+  -> `playback` Renderer State Channel -> Unit View
+```
+
+The backend subscribes with `replayLatest: true`, updates loaded cycled Units, and republishes the compact state to the renderer channel. Each Unit View subscribes with `subscribeRendererState('playback', ..., { replayLatest: true })` and unsubscribes when unmounted. Playback progress animation is local interpolation only: neither the backend nor Unit View polls state or calls `getPlaybackState` as a state feed. Player actions remain RPC commands and UI state converges from later FlexLink events.
+
 ## Agent Skill
 
 This template includes a local Codex/OpenAI-compatible skill for FlexStudio plugin development:
