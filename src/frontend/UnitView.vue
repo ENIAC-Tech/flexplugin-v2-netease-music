@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useFlexBridge } from '@flexsdk/runtime/vue';
 import type { RendererStateEnvelope } from '@flexsdk/types';
 import { reducePlaybackState, type PlaybackStateCursor } from '../common/playback-state-reducer';
+import { createPlaybackSubscriptionLifecycle } from './playback-subscription-lifecycle';
 import {
   coverImageSource,
   DEFAULT_PLAYBACK_STATE,
@@ -35,11 +36,18 @@ let playbackCursor: PlaybackStateCursor<PlaybackState> = {
   available: false,
   state: null
 };
-let unsubscribePlayback: (() => Promise<void>) | null = null;
-let subscriptionPending = false;
-let mounted = false;
-let animationFrameId: number | null = null;
 let resizeObserver: ResizeObserver | null = null;
+
+const playbackLifecycle = createPlaybackSubscriptionLifecycle<RendererStateEnvelope<PlaybackState>>({
+  subscribe: (handler) => subscribeRendererState<PlaybackState>('playback', handler, { replayLatest: true }),
+  apply: applyPlaybackEvent,
+  afterRender: nextTick,
+  notify: () => bridge.value?.notifyViewReady(),
+  logError: (error) => bridge.value?.logger.error(error instanceof Error ? error : new Error(String(error))),
+  requestFrame: (callback) => requestAnimationFrame(callback),
+  cancelFrame: (id) => cancelAnimationFrame(id),
+  onFrame: () => { animationNow.value = Date.now(); }
+});
 
 const text = computed(() => language.value.startsWith('zh') ? zhText : enText);
 const settings = computed(() => normalizeUnitSettings(unitData.value, typeId.value));
@@ -157,7 +165,7 @@ const secondaryLyricStyle = computed(() => getLyricTextStyle({
 
 watch(isReady, (ready) => {
   if (!ready) return;
-  void subscribeToPlayback();
+  void playbackLifecycle.subscribe();
 }, { immediate: true });
 
 watch(unitData, () => {
@@ -169,9 +177,8 @@ watch(coverSrc, (source) => {
 }, { immediate: true });
 
 onMounted(() => {
-  mounted = true;
-  animationFrameId = requestAnimationFrame(animationFrame);
-  if (isReady.value) void subscribeToPlayback();
+  playbackLifecycle.mount();
+  if (isReady.value) void playbackLifecycle.subscribe();
   resizeObserver = new ResizeObserver((entries) => {
     const rect = entries[0]?.contentRect;
     if (!rect) return;
@@ -181,41 +188,14 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  mounted = false;
+  playbackLifecycle.unmount();
   resizeObserver?.disconnect();
   resizeObserver = null;
-  if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
-  animationFrameId = null;
-  const unsubscribe = unsubscribePlayback;
-  unsubscribePlayback = null;
-  if (unsubscribe) void unsubscribe();
 });
 
-function animationFrame() {
-  if (!mounted) return;
-  animationNow.value = Date.now();
-  animationFrameId = requestAnimationFrame(animationFrame);
-}
-
-async function subscribeToPlayback() {
-  if (!mounted || subscriptionPending || unsubscribePlayback) return;
-  subscriptionPending = true;
-  try {
-    const unsubscribe = await subscribeRendererState<PlaybackState>('playback', handlePlaybackEvent, {
-      replayLatest: true
-    });
-    if (!mounted) await unsubscribe();
-    else unsubscribePlayback = unsubscribe;
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    subscriptionPending = false;
-  }
-}
-
-async function handlePlaybackEvent(event: RendererStateEnvelope<PlaybackState>) {
+function applyPlaybackEvent(event: RendererStateEnvelope<PlaybackState>): boolean {
   const nextCursor = reducePlaybackState(playbackCursor, event);
-  if (nextCursor === playbackCursor) return;
+  if (nextCursor === playbackCursor) return false;
   playbackCursor = nextCursor;
   playbackAvailable.value = nextCursor.available;
   hasPlaybackSnapshot.value = nextCursor.state !== null;
@@ -231,8 +211,7 @@ async function handlePlaybackEvent(event: RendererStateEnvelope<PlaybackState>) 
   } else {
     state.value = { ...DEFAULT_PLAYBACK_STATE };
   }
-  await nextTick();
-  bridge.value?.notifyViewReady();
+  return true;
 }
 
 async function sendCommand(command: PlayerCommand) {

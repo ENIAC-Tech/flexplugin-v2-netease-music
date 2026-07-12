@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import Plugin from '../../src/backend';
 import { reducePlaybackState } from '../../src/common/playback-state-reducer';
+import { coverImageSource } from '../../src/common/netease';
+import { RendererStateRegistry } from '../../../../FlexStudio/src/main/plugin/renderer-state-registry';
 
 const snapshot = (providerEpoch: number, revision: number, payload: any, extra = {}) => ({
   providerUUID: '@aspen/netease-music-link-essentials', channel: 'playback', providerEpoch,
@@ -130,21 +132,37 @@ test('projects exact compact renderer payload without lyrics base64 or arbitrary
 });
 
 test('dependency snapshot flows through renderer publication and reducer to displayed fields', async () => {
-  const h = harness(); await h.load();
+  const deliveries: any[] = [];
+  const registry = new RendererStateRegistry({
+    now: () => 123,
+    createDeliveryId: () => `delivery-${deliveries.length + 1}`,
+    sendMessage: (_session, message) => deliveries.push(message)
+  });
+  registry.registerProviderChannel('@aspen/netease-music', 'playback');
+  const publish = jest.fn(async (channel: string, update: any) => {
+    registry.publish('@aspen/netease-music', channel, update);
+  });
+  const h = harness(publish); await h.load();
   await h.hostApi.__dependencyHandler(snapshot(7, 1, {
     ...state(),
     song: { songName: 'Event Song', authorName: 'Event Artist', originalCoverUrl: 'https://example.test/cover.jpg' },
     currentLyric: { lineIndex: 0, wordIndex: 1, line: { originalLyric: 'Event lyric' }, nextLine: null }
   }));
-  const published = h.publish.mock.calls.at(-1)?.[1];
-  const rendered = reducePlaybackState(
+  registry.subscribe('@aspen/netease-music', 'unit-view', 'playback', 'subscription', { replayLatest: true });
+  expect(deliveries[0].envelope).toMatchObject({ kind: 'available', providerEpoch: 1, revision: 0 });
+  let rendered = reducePlaybackState(
     { providerEpoch: -1, revision: -1, available: false, state: null },
-    { providerEpoch: 1, revision: 1, kind: published.kind, payload: published.payload }
+    deliveries[0].envelope
   );
+  registry.acknowledge('@aspen/netease-music', 'unit-view', 'subscription', deliveries[0].deliveryId);
+  expect(deliveries[1].envelope).toMatchObject({ kind: 'snapshot', providerEpoch: 1, revision: 1 });
+  rendered = reducePlaybackState(rendered, deliveries[1].envelope);
   expect(rendered.state).toMatchObject({
     song: { songName: 'Event Song', originalCoverUrl: 'https://example.test/cover.jpg' },
     currentLyric: { line: { originalLyric: 'Event lyric' } }
   });
+  expect(coverImageSource(rendered.state?.song)).toBe('https://example.test/cover.jpg');
+  registry.acknowledge('@aspen/netease-music', 'unit-view', 'subscription', deliveries[1].deliveryId);
 });
 
 test('serializes concurrent Unit changes and publications when setFunction is deferred', async () => {
