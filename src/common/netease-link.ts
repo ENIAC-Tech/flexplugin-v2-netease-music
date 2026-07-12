@@ -3,7 +3,6 @@ export const NETEASE_LINK_PLAYBACK_CHANNEL = 'playback';
 
 export const NETEASE_LINK_METHODS = {
   getApiInfo: 'getApiInfo',
-  getPlaybackState: 'getPlaybackState',
   getConnectionStatus: 'getConnectionStatus',
   sendPlayerCommand: 'sendPlayerCommand',
   installFlexLinkPlugin: 'installFlexLinkPlugin',

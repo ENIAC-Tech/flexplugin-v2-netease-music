@@ -395,7 +395,8 @@ export function coverImageSource(song: NeteaseSong | null | undefined): string {
   const cover = resolveCoverValue(song).trim();
   if (!cover) return '';
   if (cover.startsWith('data:')) return cover;
-  if (isRemoteCoverUrl(cover)) return '';
+  if (isSafeRemoteCoverUrl(cover)) return cover;
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(cover)) return '';
   const mimeType = song?.coverMimeType?.trim() || 'image/jpeg';
   return `data:${mimeType};base64,${cover}`;
 }
@@ -410,11 +411,14 @@ function resolveCoverValue(song: NeteaseSong | null | undefined): string {
   if (song.coverBase64) return song.coverBase64;
   if (typeof flexLinkCover === 'string') return flexLinkCover;
   if (flexLinkCover?.value) return flexLinkCover.value;
+  if (song.originalCoverUrl) return song.originalCoverUrl;
+  if (song.picUrl) return song.picUrl;
+  if (song.album?.picUrl) return song.album.picUrl;
   return '';
 }
 
-function isRemoteCoverUrl(value: string): boolean {
-  return /^(https?|orpheus):\/\//i.test(value);
+function isSafeRemoteCoverUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
 }
 
 export function splitLyricText(text: string): string[] {

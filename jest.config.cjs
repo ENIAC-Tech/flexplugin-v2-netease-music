@@ -1,6 +1,9 @@
 module.exports = {
   testEnvironment: 'node',
-  testMatch: ['<rootDir>/tests/backend/**/*.test.ts'],
+  testMatch: [
+    '<rootDir>/tests/backend/**/*.test.ts',
+    '<rootDir>/tests/frontend/**/*.test.ts'
+  ],
   modulePathIgnorePatterns: ['<rootDir>/dist/'],
   transform: { '^.+\\.tsx?$': ['ts-jest', { tsconfig: { types: ['node', 'jest'], strict: true } }] },
   moduleNameMapper: {

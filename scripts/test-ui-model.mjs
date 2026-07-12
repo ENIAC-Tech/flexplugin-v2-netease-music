@@ -91,13 +91,18 @@ assert.equal(lyricSettings.secondaryY, 44);
 
 assert.equal(
   common.coverImageSource({ cover: 'http://p4.music.126.net/example.jpg' }),
-  '',
-  'remote http covers must wait for backend base64 conversion instead of violating plugin CSP'
+  'http://p4.music.126.net/example.jpg',
+  'remote http cover identity should render without a base64 copy'
 );
 assert.equal(
   common.coverImageSource({ cover: { type: 'Url', value: 'https://p4.music.126.net/example.jpg' } }),
-  '',
-  'remote https covers must wait for backend base64 conversion instead of violating plugin CSP'
+  'https://p4.music.126.net/example.jpg',
+  'remote https cover identity should render without a base64 copy'
+);
+assert.equal(
+  common.coverImageSource({ originalCoverUrl: 'https://p4.music.126.net/original.jpg' }),
+  'https://p4.music.126.net/original.jpg',
+  'compact playback cover URL should remain usable'
 );
 assert.equal(
   common.coverImageSource({ coverBase64: 'abc123', coverMimeType: 'image/png' }),

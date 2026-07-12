@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useFlexBridge } from '@flexsdk/runtime/vue';
+import type { RendererStateEnvelope } from '@flexsdk/types';
+import { reducePlaybackState, type PlaybackStateCursor } from '../common/playback-state-reducer';
 import {
   coverImageSource,
   DEFAULT_PLAYBACK_STATE,
@@ -14,7 +16,7 @@ import {
 } from '../common/netease';
 import { clampPercent, getDeviceLayout, getLyricTextStyle } from './unit-view-model';
 
-const { isReady, bridge, backendRpc, typeId, unitData, language } = useFlexBridge();
+const { isReady, bridge, backendRpc, subscribeRendererState, typeId, unitData, language } = useFlexBridge();
 
 const rootEl = ref<HTMLElement | null>(null);
 const viewport = ref({ width: 0, height: 0 });
@@ -23,10 +25,20 @@ const animationNow = ref(Date.now());
 const lyricCursor = ref('');
 const lyricCursorStartedAt = ref(Date.now());
 const errorMessage = ref('');
+const playbackAvailable = ref(false);
+const hasPlaybackSnapshot = ref(false);
 const reportedCoverDiagnostics = new Set<string>();
 
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let animationTimer: ReturnType<typeof setInterval> | null = null;
+let playbackCursor: PlaybackStateCursor<PlaybackState> = {
+  providerEpoch: -1,
+  revision: -1,
+  available: false,
+  state: null
+};
+let unsubscribePlayback: (() => Promise<void>) | null = null;
+let subscriptionPending = false;
+let mounted = false;
+let animationFrameId: number | null = null;
 let resizeObserver: ResizeObserver | null = null;
 
 const text = computed(() => language.value.startsWith('zh') ? zhText : enText);
@@ -123,6 +135,11 @@ const viewClasses = computed(() => [
     playing: isPlaying.value
   }
 ]);
+const channelStatus = computed(() => {
+  if (!playbackAvailable.value) return text.value.disconnected;
+  if (!hasPlaybackSnapshot.value) return text.value.waiting;
+  return '';
+});
 const primaryLyricStyle = computed(() => getLyricTextStyle({
   align: settings.value.primaryAlign,
   x: settings.value.primaryX,
@@ -140,8 +157,7 @@ const secondaryLyricStyle = computed(() => getLyricTextStyle({
 
 watch(isReady, (ready) => {
   if (!ready) return;
-  startLoops();
-  void refresh();
+  void subscribeToPlayback();
 }, { immediate: true });
 
 watch(unitData, () => {
@@ -153,6 +169,9 @@ watch(coverSrc, (source) => {
 }, { immediate: true });
 
 onMounted(() => {
+  mounted = true;
+  animationFrameId = requestAnimationFrame(animationFrame);
+  if (isReady.value) void subscribeToPlayback();
   resizeObserver = new ResizeObserver((entries) => {
     const rect = entries[0]?.contentRect;
     if (!rect) return;
@@ -162,40 +181,55 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  mounted = false;
   resizeObserver?.disconnect();
   resizeObserver = null;
-  stopLoops();
+  if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+  animationFrameId = null;
+  const unsubscribe = unsubscribePlayback;
+  unsubscribePlayback = null;
+  if (unsubscribe) void unsubscribe();
 });
 
-function startLoops() {
-  stopLoops();
-  pollTimer = setInterval(() => { void refresh(); }, 800);
-  animationTimer = setInterval(() => {
-    animationNow.value = Date.now();
-    bridge.value?.notifyViewReady();
-  }, 120);
+function animationFrame() {
+  if (!mounted) return;
+  animationNow.value = Date.now();
+  animationFrameId = requestAnimationFrame(animationFrame);
 }
 
-function stopLoops() {
-  if (pollTimer) clearInterval(pollTimer);
-  if (animationTimer) clearInterval(animationTimer);
-  pollTimer = null;
-  animationTimer = null;
-}
-
-async function refresh() {
-  if (!isReady.value) return;
+async function subscribeToPlayback() {
+  if (!mounted || subscriptionPending || unsubscribePlayback) return;
+  subscriptionPending = true;
   try {
-    const next = await backendRpc<PlaybackState>('getPlaybackState');
-    const nextCursor = `${next.currentLyric?.lineIndex ?? -1}:${next.currentLyric?.wordIndex ?? -1}`;
-    if (nextCursor !== lyricCursor.value) {
-      lyricCursor.value = nextCursor;
+    const unsubscribe = await subscribeRendererState<PlaybackState>('playback', handlePlaybackEvent, {
+      replayLatest: true
+    });
+    if (!mounted) await unsubscribe();
+    else unsubscribePlayback = unsubscribe;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    subscriptionPending = false;
+  }
+}
+
+async function handlePlaybackEvent(event: RendererStateEnvelope<PlaybackState>) {
+  const nextCursor = reducePlaybackState(playbackCursor, event);
+  if (nextCursor === playbackCursor) return;
+  playbackCursor = nextCursor;
+  playbackAvailable.value = nextCursor.available;
+  hasPlaybackSnapshot.value = nextCursor.state !== null;
+  if (nextCursor.state) {
+    const next = nextCursor.state;
+    const nextLyricCursor = `${next.currentLyric?.lineIndex ?? -1}:${next.currentLyric?.wordIndex ?? -1}`;
+    if (nextLyricCursor !== lyricCursor.value) {
+      lyricCursor.value = nextLyricCursor;
       lyricCursorStartedAt.value = Date.now();
     }
     state.value = next;
     errorMessage.value = '';
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : String(error);
+  } else {
+    state.value = { ...DEFAULT_PLAYBACK_STATE };
   }
   await nextTick();
   bridge.value?.notifyViewReady();
@@ -207,7 +241,6 @@ async function sendCommand(command: PlayerCommand) {
     error: error instanceof Error ? error.message : String(error)
   }));
   if (!result.success) errorMessage.value = result.error ?? text.value.commandFailed;
-  window.setTimeout(() => { void refresh(); }, 120);
 }
 
 function commandForView(): PlayerCommand {
@@ -264,6 +297,7 @@ function translatePlayMode(label: string): string {
 const enText = {
   ready: 'Ready',
   waiting: 'Waiting for FlexLink',
+  disconnected: 'FlexLink disconnected',
   noLyrics: 'No lyrics',
   play: 'Play',
   pause: 'Pause',
@@ -277,6 +311,7 @@ const enText = {
 const zhText = {
   ready: '就绪',
   waiting: '等待 FlexLink',
+  disconnected: 'FlexLink 未连接',
   noLyrics: '暂无歌词',
   play: '播放',
   pause: '暂停',
@@ -374,7 +409,7 @@ const zhText = {
       <span v-if="settings.compactLabel !== false" class="control-label">{{ controlLabel }}</span>
     </button>
 
-    <div v-if="errorMessage" class="status-overlay">{{ errorMessage }}</div>
+    <div v-if="errorMessage || channelStatus" class="status-overlay">{{ errorMessage || channelStatus }}</div>
   </div>
 </template>
 

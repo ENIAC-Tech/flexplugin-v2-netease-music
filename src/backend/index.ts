@@ -112,7 +112,6 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
       { replayLatest: true }
     );
 
-    this.registerRendererRpc('getPlaybackState', async () => this.getPlaybackStateForRenderer());
     this.registerRendererRpc('getConnectionStatus', async () => this.getConnectionStatusForRenderer());
     this.registerRendererRpc('sendPlayerCommand', async (command: PlayerCommand) => this.handlePlayerCommand(command));
     this.registerRendererRpc('installFlexLinkPlugin', async () =>
@@ -158,10 +157,6 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
     await this.publicationQueue.catch(() => undefined);
     this.cycledUnitSlots.clear();
     await super.onUnload();
-  }
-
-  private async getPlaybackStateForRenderer(): Promise<PlaybackState> {
-    return clonePlaybackState(this.state);
   }
 
   private async getConnectionStatusForRenderer(): Promise<NeteaseLinkConnectionStatus> {

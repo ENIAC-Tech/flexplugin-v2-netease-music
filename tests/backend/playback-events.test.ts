@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import Plugin from '../../src/backend';
+import { reducePlaybackState } from '../../src/common/playback-state-reducer';
 
 const snapshot = (providerEpoch: number, revision: number, payload: any, extra = {}) => ({
   providerUUID: '@aspen/netease-music-link-essentials', channel: 'playback', providerEpoch,
@@ -30,8 +31,9 @@ function harness(publish = jest.fn().mockResolvedValue(undefined)) {
 test('registers renderer channel before replay subscription and contains no polling backend', async () => {
   const h = harness(); await h.load();
   expect(h.calls.slice(0, 2)).toEqual(['register:playback', 'subscribe:playback:true']);
+  expect(h.hostApi.__rpcs.has('getPlaybackState')).toBe(false);
   const source = fs.readFileSync(path.resolve(__dirname, '../../src/backend/index.ts'), 'utf8');
-  for (const forbidden of ['PLAYBACK_SYNC_INTERVAL_MS', 'playbackSyncTimer', 'playbackSyncInFlight', 'startPlaybackSync', 'clearPlaybackSyncTimer', "source:'poll'", "source: 'poll'"])
+  for (const forbidden of ['getPlaybackStateForRenderer', "registerRendererRpc('getPlaybackState'", 'PLAYBACK_SYNC_INTERVAL_MS', 'playbackSyncTimer', 'playbackSyncInFlight', 'startPlaybackSync', 'clearPlaybackSyncTimer', "source:'poll'", "source: 'poll'"])
     expect(source).not.toContain(forbidden);
 });
 
@@ -45,7 +47,7 @@ test('replay lifecycle accepts authoritative snapshots and ignores stale envelop
   await emit(snapshot(0, 99, state('Paused')));
   await emit(snapshot(2, 1, state('Paused'), { resyncRequired: true }));
   expect(h.publish.mock.calls.map((c: any[]) => c[1].payload.playState)).toEqual(['Playing', 'Paused']);
-  expect(await h.hostApi.__rpcs.get('getPlaybackState')()).toMatchObject({ playState: 'Paused', lyrics: null });
+  expect(h.publish.mock.calls.at(-1)?.[1].payload).toMatchObject({ playState: 'Paused' });
 });
 
 test('unavailable publishes disconnected state and unload unsubscribes and prevents late publications', async () => {
@@ -127,6 +129,24 @@ test('projects exact compact renderer payload without lyrics base64 or arbitrary
   expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThan(64 * 1024);
 });
 
+test('dependency snapshot flows through renderer publication and reducer to displayed fields', async () => {
+  const h = harness(); await h.load();
+  await h.hostApi.__dependencyHandler(snapshot(7, 1, {
+    ...state(),
+    song: { songName: 'Event Song', authorName: 'Event Artist', originalCoverUrl: 'https://example.test/cover.jpg' },
+    currentLyric: { lineIndex: 0, wordIndex: 1, line: { originalLyric: 'Event lyric' }, nextLine: null }
+  }));
+  const published = h.publish.mock.calls.at(-1)?.[1];
+  const rendered = reducePlaybackState(
+    { providerEpoch: -1, revision: -1, available: false, state: null },
+    { providerEpoch: 1, revision: 1, kind: published.kind, payload: published.payload }
+  );
+  expect(rendered.state).toMatchObject({
+    song: { songName: 'Event Song', originalCoverUrl: 'https://example.test/cover.jpg' },
+    currentLyric: { line: { originalLyric: 'Event lyric' } }
+  });
+});
+
 test('serializes concurrent Unit changes and publications when setFunction is deferred', async () => {
   const h = harness(); await h.load();
   const load = h.hostApi.__unitEvents.find((x: any) => x.type.endsWith('play-pause') && x.event === 'load');
@@ -148,11 +168,11 @@ test('higher epoch available clears stale cache and Units before retained snapsh
   await load.handler({ payload: { uuid: 'u', serialNumber: 's' } }); await new Promise<void>((r) => setImmediate(r));
   await h.hostApi.__dependencyHandler(snapshot(1, 1, state('Playing'))); h.publish.mockClear(); h.hostApi.unit.setFunction.mockClear();
   await h.hostApi.__dependencyHandler({ ...snapshot(2, 1, {}), kind: 'available' });
-  expect(await h.hostApi.__rpcs.get('getPlaybackState')()).toMatchObject({ connected: false, playState: 'Stopped' });
+  expect(h.publish.mock.calls.at(-1)?.[1].payload).toMatchObject({ connected: false, playState: 'Stopped' });
   expect(h.hostApi.unit.setFunction).toHaveBeenLastCalledWith('s', 'u', 'play');
   expect(h.publish).toHaveBeenCalledTimes(1);
   await h.hostApi.__dependencyHandler(snapshot(2, 2, state('Playing')));
-  expect(await h.hostApi.__rpcs.get('getPlaybackState')()).toMatchObject({ connected: true, playState: 'Playing' });
+  expect(h.publish.mock.calls.at(-1)?.[1].payload).toMatchObject({ connected: true, playState: 'Playing' });
 });
 
 test('play-mode and unavailable/resync lifecycle refresh loaded Units', async () => {
@@ -165,7 +185,7 @@ test('play-mode and unavailable/resync lifecycle refresh loaded Units', async ()
   await h.hostApi.__dependencyHandler({ ...snapshot(1, 2, {}), kind: 'unavailable' });
   expect(h.hostApi.unit.setFunction).toHaveBeenLastCalledWith('s', 'm', 'sequential');
   await h.hostApi.__dependencyHandler({ ...snapshot(1, 3, {}), kind: 'delta', resyncRequired: true });
-  expect(await h.hostApi.__rpcs.get('getPlaybackState')()).toMatchObject({ connected: false, playState: 'Stopped' });
+  expect(h.publish.mock.calls.at(-1)?.[1].payload).toMatchObject({ connected: false, playState: 'Stopped' });
 });
 
 test('frontend Vue sources are valid UTF-8 without replacement characters', () => {
