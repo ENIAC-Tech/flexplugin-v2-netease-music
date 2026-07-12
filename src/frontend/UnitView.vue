@@ -280,8 +280,8 @@ const zhText = {
   noLyrics: '暂无歌词',
   play: '播放',
   pause: '暂停',
-  previous: '上一�?,
-  next: '下一�?,
+  previous: '上一首',
+  next: '下一首',
   commandFailed: '命令执行失败',
   coverFailed: '封面加载失败',
   playModes: {

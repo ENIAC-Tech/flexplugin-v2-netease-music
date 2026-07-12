@@ -38,7 +38,8 @@ test('registers renderer channel before replay subscription and contains no poll
 test('replay lifecycle accepts authoritative snapshots and ignores stale envelopes', async () => {
   const h = harness(); await h.load(); const emit = h.hostApi.__dependencyHandler;
   await emit({ ...snapshot(1, 1, {}), kind: 'available' });
-  expect(h.publish).not.toHaveBeenCalled();
+  expect(h.publish).toHaveBeenCalledTimes(1);
+  h.publish.mockClear();
   await emit(snapshot(1, 2, state('Playing')));
   await emit(snapshot(1, 2, state('Paused')));
   await emit(snapshot(0, 99, state('Paused')));
@@ -55,8 +56,8 @@ test('unavailable publishes disconnected state and unload unsubscribes and preve
   const accepted = emit(snapshot(1, 1, state()));
   await new Promise<void>((resolve) => setImmediate(resolve));
   const unloading = h.plugin.onUnload();
-  await emit({ ...snapshot(1, 2, {}), kind: 'unavailable' });
-  release(); await accepted; await unloading;
+  const late = emit({ ...snapshot(1, 2, {}), kind: 'unavailable' });
+  release(); await accepted; await unloading; await late;
   expect(h.unsubscribe).toHaveBeenCalledTimes(1);
   expect(publish).toHaveBeenCalledTimes(1);
 });
@@ -105,4 +106,71 @@ test('cycled unit tracking initializes, deduplicates unchanged signatures, updat
   await h.plugin.onUnload();
   await h.hostApi.__dependencyHandler(snapshot(1, 3, state('Paused')));
   expect(h.hostApi.unit.setFunction).toHaveBeenCalledTimes(1);
+});
+
+test('projects exact compact renderer payload without lyrics base64 or arbitrary fields', async () => {
+  const h = harness(); await h.load();
+  const huge = 'x'.repeat(100_000);
+  await h.hostApi.__dependencyHandler(snapshot(1, 1, {
+    ...state(), lyrics: { lines: [{ originalLyric: huge }] }, unknown: huge,
+    song: { songName: 'Song', authorName: 'Artist', albumName: 'Album', ncmId: 1, duration: 2,
+      originalCoverUrl: 'https://example.test/a.jpg', coverUrl: 'data:image/png;base64,' + huge,
+      picUrl: 'https://example.test/p.jpg', coverBase64: huge, cover: { type: 'Base64', value: huge },
+      album: { picUrl: 'https://example.test/ap.jpg', coverUrl: 'data:image/png;base64,' + huge }, extra: huge }
+  }));
+  const payload = h.publish.mock.calls[0][1].payload;
+  expect(Object.keys(payload)).toEqual(['connected', 'connectionError', 'song', 'playState', 'timeline', 'playMode', 'currentLyric', 'lastUpdatedAt']);
+  expect(Object.keys(payload.song)).toEqual(['songName', 'authorName', 'albumName', 'ncmId', 'duration', 'originalCoverUrl', 'picUrl', 'album']);
+  expect(payload.song.coverUrl).toBeUndefined();
+  expect(payload.song.album.coverUrl).toBeUndefined();
+  expect(JSON.stringify(payload)).not.toContain(huge);
+  expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThan(64 * 1024);
+});
+
+test('serializes concurrent Unit changes and publications when setFunction is deferred', async () => {
+  const h = harness(); await h.load();
+  const load = h.hostApi.__unitEvents.find((x: any) => x.type.endsWith('play-pause') && x.event === 'load');
+  await load.handler({ payload: { uuid: 'u', serialNumber: 's' } });
+  await new Promise<void>((resolve) => setImmediate(resolve)); h.hostApi.unit.setFunction.mockClear(); h.publish.mockClear();
+  let release!: () => void;
+  h.hostApi.unit.setFunction.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; })).mockResolvedValue(undefined);
+  const first = h.hostApi.__dependencyHandler(snapshot(1, 1, state('Playing')));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const second = h.hostApi.__dependencyHandler(snapshot(1, 2, state('Paused')));
+  expect(h.publish).not.toHaveBeenCalled(); release(); await Promise.all([first, second]);
+  expect(h.publish.mock.calls.map((c: any[]) => c[1].payload.playState)).toEqual(['Playing', 'Paused']);
+  expect(h.hostApi.unit.setFunction.mock.calls.map((c: any[]) => c[2])).toEqual(['pause', 'play']);
+});
+
+test('higher epoch available clears stale cache and Units before retained snapshot', async () => {
+  const h = harness(); await h.load();
+  const load = h.hostApi.__unitEvents.find((x: any) => x.type.endsWith('play-pause') && x.event === 'load');
+  await load.handler({ payload: { uuid: 'u', serialNumber: 's' } }); await new Promise<void>((r) => setImmediate(r));
+  await h.hostApi.__dependencyHandler(snapshot(1, 1, state('Playing'))); h.publish.mockClear(); h.hostApi.unit.setFunction.mockClear();
+  await h.hostApi.__dependencyHandler({ ...snapshot(2, 1, {}), kind: 'available' });
+  expect(await h.hostApi.__rpcs.get('getPlaybackState')()).toMatchObject({ connected: false, playState: 'Stopped' });
+  expect(h.hostApi.unit.setFunction).toHaveBeenLastCalledWith('s', 'u', 'play');
+  expect(h.publish).toHaveBeenCalledTimes(1);
+  await h.hostApi.__dependencyHandler(snapshot(2, 2, state('Playing')));
+  expect(await h.hostApi.__rpcs.get('getPlaybackState')()).toMatchObject({ connected: true, playState: 'Playing' });
+});
+
+test('play-mode and unavailable/resync lifecycle refresh loaded Units', async () => {
+  const h = harness(); await h.load();
+  const load = h.hostApi.__unitEvents.find((x: any) => x.type.endsWith('play-mode') && x.event === 'load');
+  await load.handler({ payload: { uuid: 'm', serialNumber: 's' } }); await new Promise<void>((r) => setImmediate(r));
+  expect(h.hostApi.unit.setFunction).toHaveBeenLastCalledWith('s', 'm', 'sequential');
+  await h.hostApi.__dependencyHandler(snapshot(1, 1, { ...state(), playMode: { isShuffling: true, repeatMode: 'Off' } }));
+  expect(h.hostApi.unit.setFunction).toHaveBeenLastCalledWith('s', 'm', 'shuffle');
+  await h.hostApi.__dependencyHandler({ ...snapshot(1, 2, {}), kind: 'unavailable' });
+  expect(h.hostApi.unit.setFunction).toHaveBeenLastCalledWith('s', 'm', 'sequential');
+  await h.hostApi.__dependencyHandler({ ...snapshot(1, 3, {}), kind: 'delta', resyncRequired: true });
+  expect(await h.hostApi.__rpcs.get('getPlaybackState')()).toMatchObject({ connected: false, playState: 'Stopped' });
+});
+
+test('frontend Vue sources are valid UTF-8 without replacement characters', () => {
+  const frontend = path.resolve(__dirname, '../../src/frontend');
+  for (const file of fs.readdirSync(frontend).filter((name) => name.endsWith('.vue'))) {
+    expect(fs.readFileSync(path.join(frontend, file), 'utf8')).not.toContain('�');
+  }
 });

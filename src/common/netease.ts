@@ -80,6 +80,19 @@ export interface PlaybackState {
   connectionError: string | null;
 }
 
+export interface CompactPlaybackState {
+  connected: boolean;
+  connectionError: string | null;
+  song: Pick<NeteaseSong, 'songName' | 'authorName' | 'albumName' | 'ncmId' | 'duration' | 'originalCoverUrl' | 'coverUrl' | 'picUrl'> & {
+    album?: { picUrl?: string; coverUrl?: string };
+  } | null;
+  playState: string;
+  timeline: TimelineState;
+  playMode: PlayModeState;
+  currentLyric: CurrentLyricState | null;
+  lastUpdatedAt: number;
+}
+
 export interface UnitSettings {
   viewKind: ViewKind;
   showTitle?: boolean;

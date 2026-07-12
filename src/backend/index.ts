@@ -2,6 +2,7 @@ import { FlexPluginBase } from '@flexsdk/runtime';
 import type { PluginDefinitionsPayload, PluginEventEnvelope, PluginLoadContext } from '@flexsdk/types';
 import {
   createDefaultUnitData,
+  type CompactPlaybackState,
   DEFAULT_PLAYBACK_STATE,
   type PlaybackState,
   PLUGIN_UUID,
@@ -50,6 +51,7 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
   private providerEpoch = -1;
   private providerRevision = -1;
   private publicationQueue: Promise<void> = Promise.resolve();
+  private eventQueue: Promise<void> = Promise.resolve();
 
   async getDefinitions(): Promise<PluginDefinitionsPayload> {
     const pluginVersion = this.pluginVersion || '1.0.0';
@@ -105,7 +107,7 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
     this.dependencyUnsubscribe = await this.onDependencyState(
       NETEASE_LINK_PLUGIN_UUID,
       NETEASE_LINK_PLAYBACK_CHANNEL,
-      async (event: any) => this.handleDependencyPlaybackEvent(event),
+      async (event: any) => this.queueDependencyPlaybackEvent(event),
       { replayLatest: true }
     );
 
@@ -151,6 +153,7 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
     const unsubscribe = this.dependencyUnsubscribe;
     this.dependencyUnsubscribe = null;
     unsubscribe?.();
+    await this.eventQueue.catch(() => undefined);
     await this.publicationQueue.catch(() => undefined);
     this.cycledUnitSlots.clear();
     await super.onUnload();
@@ -217,6 +220,13 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
     };
   }
 
+  private queueDependencyPlaybackEvent(event: any): Promise<void> {
+    if (this.unloaded) return this.eventQueue;
+    const apply = () => this.handleDependencyPlaybackEvent(event);
+    this.eventQueue = this.eventQueue.then(apply, apply);
+    return this.eventQueue;
+  }
+
   private async handleDependencyPlaybackEvent(event: any): Promise<void> {
     if (this.unloaded) return;
     const epoch = Number(event?.providerEpoch);
@@ -228,21 +238,23 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
     this.providerEpoch = epoch;
     this.providerRevision = revision;
 
-    if (event.kind === 'available') return;
+    if (event.kind === 'available') {
+      if (higherEpoch) await this.acceptPlaybackState(this.createWaitingPlaybackState(event.timestamp));
+      return;
+    }
     if (event.kind === 'unavailable') {
       await this.acceptPlaybackState({
-        ...clonePlaybackState(DEFAULT_PLAYBACK_STATE),
-        lastUpdatedAt: Number(event.timestamp) || Date.now(),
+        ...this.createWaitingPlaybackState(event.timestamp),
         connectionError: 'NeteaseMusicLinkEssentials unavailable.'
       });
       return;
     }
     if (higherEpoch && event.kind !== 'snapshot') {
-      this.state = createInitialPlaybackState();
+      await this.acceptPlaybackState(this.createWaitingPlaybackState(event.timestamp));
       return;
     }
     if (event.resyncRequired && event.kind !== 'snapshot') {
-      this.state = createInitialPlaybackState();
+      await this.acceptPlaybackState(this.createWaitingPlaybackState(event.timestamp));
       return;
     }
     if (event.kind !== 'snapshot' || !this.asRecord(event.payload)) return;
@@ -255,12 +267,47 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
     this.state = nextState;
     this.lastLinkErrorMessage = null;
     if (this.getCycledStateSignature() !== previousSignature) await this.syncAllCycledUnitStates();
-    await this.queueRendererSnapshot(nextState);
+    await this.queueRendererSnapshot(this.projectCompactPlaybackState(nextState));
   }
 
-  private queueRendererSnapshot(state: PlaybackState): Promise<void> {
+  private createWaitingPlaybackState(timestamp: unknown): PlaybackState {
+    return { ...clonePlaybackState(DEFAULT_PLAYBACK_STATE), lastUpdatedAt: Number(timestamp) || Date.now(),
+      connectionError: 'Waiting for NeteaseMusicLinkEssentials playback snapshot.' };
+  }
+
+  private projectCompactPlaybackState(state: PlaybackState): CompactPlaybackState {
+    const safeUrl = (value: unknown): string | undefined =>
+      typeof value === 'string' && /^https?:\/\//i.test(value) ? value.slice(0, 2048) : undefined;
+    const compactString = (value: unknown): string | undefined =>
+      typeof value === 'string' && value.trim() ? value.trim().slice(0, 4096) : undefined;
+    const lyric = state.currentLyric;
+    const song = state.song;
+    return {
+      connected: Boolean(state.connected), connectionError: this.readString(state.connectionError),
+      song: song ? {
+        songName: compactString(song.songName), authorName: compactString(song.authorName),
+        albumName: compactString(song.albumName),
+        ncmId: Number.isFinite(Number(song.ncmId)) ? Number(song.ncmId) : undefined,
+        duration: Number.isFinite(Number(song.duration)) ? Number(song.duration) : undefined,
+        originalCoverUrl: safeUrl(song.originalCoverUrl), coverUrl: safeUrl(song.coverUrl), picUrl: safeUrl(song.picUrl),
+        album: song.album ? { picUrl: safeUrl(song.album.picUrl), coverUrl: safeUrl(song.album.coverUrl) } : undefined
+      } : null,
+      playState: String(state.playState),
+      timeline: { currentTime: Number(state.timeline.currentTime), totalTime: Number(state.timeline.totalTime) },
+      playMode: { isShuffling: Boolean(state.playMode.isShuffling), repeatMode: String(state.playMode.repeatMode) },
+      currentLyric: lyric ? {
+        lineIndex: Number.isFinite(Number(lyric.lineIndex)) ? Number(lyric.lineIndex) : undefined,
+        wordIndex: Number.isFinite(Number(lyric.wordIndex)) ? Number(lyric.wordIndex) : undefined,
+        line: lyric.line ? { originalLyric: compactString(lyric.line.originalLyric), translatedLyric: compactString(lyric.line.translatedLyric) } : undefined,
+        nextLine: lyric.nextLine ? { originalLyric: compactString(lyric.nextLine.originalLyric), translatedLyric: compactString(lyric.nextLine.translatedLyric) } : undefined
+      } : null,
+      lastUpdatedAt: Number(state.lastUpdatedAt)
+    };
+  }
+
+  private queueRendererSnapshot(state: CompactPlaybackState): Promise<void> {
     if (this.unloaded) return this.publicationQueue;
-    const payload = clonePlaybackState(state);
+    const payload = JSON.parse(JSON.stringify(state)) as CompactPlaybackState;
     const publish = async () => {
       if (this.unloaded) return;
       try {
@@ -279,8 +326,6 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
     const playMode = this.asRecord(record.playMode);
     const lastUpdatedAt = Number(record.lastUpdatedAt ?? Date.now());
     return {
-      ...clonePlaybackState(DEFAULT_PLAYBACK_STATE),
-      ...record,
       connected: Boolean(record.connected),
       song: (record.song as PlaybackState['song']) ?? null,
       playState: this.readString(record.playState) ?? 'Stopped',
@@ -292,7 +337,7 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
         isShuffling: Boolean(playMode?.isShuffling),
         repeatMode: String(playMode?.repeatMode ?? 'Off')
       },
-      lyrics: (record.lyrics as PlaybackState['lyrics']) ?? null,
+      lyrics: null,
       currentLyric: (record.currentLyric as PlaybackState['currentLyric']) ?? null,
       lastUpdatedAt: Number.isFinite(lastUpdatedAt) ? lastUpdatedAt : Date.now(),
       connectionError: this.readString(record.connectionError)

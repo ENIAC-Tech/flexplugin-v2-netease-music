@@ -69,15 +69,15 @@ const enText = {
 
 const zhText = {
   title: '外观',
-  subtitle: '设置变更会自动同步�?,
+  subtitle: '设置变更会自动同步。',
   unitName: 'Unit 名称',
-  defaultUnitName: '网易云音�?,
+  defaultUnitName: '网易云音乐',
   unitNames: {
     'now-playing': '当前播放',
     lyrics: '歌词',
     'play-pause': '播放 / 暂停',
-    previous: '上一�?,
-    next: '下一�?,
+    previous: '上一首',
+    next: '下一首',
     'play-mode': '播放模式'
   }
 };
