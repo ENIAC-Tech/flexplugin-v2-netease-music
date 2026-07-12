@@ -174,3 +174,25 @@ test('frontend Vue sources are valid UTF-8 without replacement characters', () =
     expect(fs.readFileSync(path.join(frontend, file), 'utf8')).not.toContain('�');
   }
 });
+
+test.each([
+  ['connectionError', { connectionError: '故障'.repeat(100_000) }],
+  ['playState', { playState: '播放'.repeat(100_000) }],
+  ['repeatMode', { playMode: { isShuffling: false, repeatMode: '循环'.repeat(100_000) } }],
+  ['combined', { connectionError: '错'.repeat(100_000), playState: '播'.repeat(100_000), playMode: { isShuffling: false, repeatMode: '循'.repeat(100_000) } }]
+])('never publishes an oversized compact payload for huge %s', async (_name, pathological) => {
+  const h = harness(); await h.load();
+  await h.hostApi.__dependencyHandler(snapshot(1, 1, { ...state(), ...pathological }));
+  const payload = h.publish.mock.calls[0][1].payload;
+  expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThanOrEqual(64 * 1024);
+  expect(Object.keys(payload)).toEqual(['connected', 'connectionError', 'song', 'playState', 'timeline', 'playMode', 'currentLyric', 'lastUpdatedAt']);
+});
+
+test('normalizes non-finite timeline values to finite defaults', async () => {
+  const h = harness(); await h.load();
+  await h.hostApi.__dependencyHandler(snapshot(1, 1, { ...state(), timeline: { currentTime: Infinity, totalTime: NaN } }));
+  const timeline = h.publish.mock.calls[0][1].payload.timeline;
+  expect(timeline).toEqual({ currentTime: 0, totalTime: 0 });
+  expect(Number.isFinite(timeline.currentTime)).toBe(true);
+  expect(Number.isFinite(timeline.totalTime)).toBe(true);
+});

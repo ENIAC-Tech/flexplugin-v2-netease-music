@@ -29,6 +29,7 @@ const CONTROL_COMMANDS: Partial<Record<ViewKind, PlayerCommand>> = {
   'play-mode': 'togglePlayMode',
   'play-pause': 'togglePlayPause'
 };
+const MAX_RENDERER_PAYLOAD_BYTES = 64 * 1024;
 
 function clonePlaybackState(state: PlaybackState): PlaybackState {
   return JSON.parse(JSON.stringify(state)) as PlaybackState;
@@ -282,8 +283,9 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
       typeof value === 'string' && value.trim() ? value.trim().slice(0, 4096) : undefined;
     const lyric = state.currentLyric;
     const song = state.song;
-    return {
-      connected: Boolean(state.connected), connectionError: this.readString(state.connectionError),
+    const finiteNumber = (value: unknown): number => Number.isFinite(Number(value)) ? Number(value) : 0;
+    const payload: CompactPlaybackState = {
+      connected: Boolean(state.connected), connectionError: compactString(state.connectionError) ?? null,
       song: song ? {
         songName: compactString(song.songName), authorName: compactString(song.authorName),
         albumName: compactString(song.albumName),
@@ -292,17 +294,32 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
         originalCoverUrl: safeUrl(song.originalCoverUrl), coverUrl: safeUrl(song.coverUrl), picUrl: safeUrl(song.picUrl),
         album: song.album ? { picUrl: safeUrl(song.album.picUrl), coverUrl: safeUrl(song.album.coverUrl) } : undefined
       } : null,
-      playState: String(state.playState),
-      timeline: { currentTime: Number(state.timeline.currentTime), totalTime: Number(state.timeline.totalTime) },
-      playMode: { isShuffling: Boolean(state.playMode.isShuffling), repeatMode: String(state.playMode.repeatMode) },
+      playState: compactString(state.playState) ?? 'Stopped',
+      timeline: { currentTime: finiteNumber(state.timeline.currentTime), totalTime: finiteNumber(state.timeline.totalTime) },
+      playMode: { isShuffling: Boolean(state.playMode.isShuffling), repeatMode: compactString(state.playMode.repeatMode) ?? 'Off' },
       currentLyric: lyric ? {
         lineIndex: Number.isFinite(Number(lyric.lineIndex)) ? Number(lyric.lineIndex) : undefined,
         wordIndex: Number.isFinite(Number(lyric.wordIndex)) ? Number(lyric.wordIndex) : undefined,
         line: lyric.line ? { originalLyric: compactString(lyric.line.originalLyric), translatedLyric: compactString(lyric.line.translatedLyric) } : undefined,
         nextLine: lyric.nextLine ? { originalLyric: compactString(lyric.nextLine.originalLyric), translatedLyric: compactString(lyric.nextLine.translatedLyric) } : undefined
       } : null,
-      lastUpdatedAt: Number(state.lastUpdatedAt)
+      lastUpdatedAt: finiteNumber(state.lastUpdatedAt)
     };
+    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') <= MAX_RENDERER_PAYLOAD_BYTES) return payload;
+    const fallback: CompactPlaybackState = {
+      connected: false,
+      connectionError: 'Playback state exceeded the 64 KiB renderer channel limit.',
+      song: null,
+      playState: 'Stopped',
+      timeline: { currentTime: 0, totalTime: 0 },
+      playMode: { isShuffling: false, repeatMode: 'Off' },
+      currentLyric: null,
+      lastUpdatedAt: Number.isFinite(Number(state.lastUpdatedAt)) ? Number(state.lastUpdatedAt) : 0
+    };
+    if (Buffer.byteLength(JSON.stringify(fallback), 'utf8') > MAX_RENDERER_PAYLOAD_BYTES) {
+      throw new Error('Internal compact playback fallback exceeded renderer channel limit');
+    }
+    return fallback;
   }
 
   private queueRendererSnapshot(state: CompactPlaybackState): Promise<void> {
@@ -330,8 +347,8 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
       song: (record.song as PlaybackState['song']) ?? null,
       playState: this.readString(record.playState) ?? 'Stopped',
       timeline: {
-        currentTime: Number(timeline?.currentTime ?? 0),
-        totalTime: Number(timeline?.totalTime ?? 0)
+        currentTime: Number.isFinite(Number(timeline?.currentTime)) ? Number(timeline?.currentTime) : 0,
+        totalTime: Number.isFinite(Number(timeline?.totalTime)) ? Number(timeline?.totalTime) : 0
       },
       playMode: {
         isShuffling: Boolean(playMode?.isShuffling),
