@@ -11,6 +11,7 @@ import {
 } from '../common/netease';
 import {
   NETEASE_LINK_METHODS,
+  NETEASE_LINK_PLAYBACK_CHANNEL,
   NETEASE_LINK_PLUGIN_UUID,
   type NeteaseLinkConnectionStatus,
   type NeteaseLinkRpcResult
@@ -27,7 +28,6 @@ const CONTROL_COMMANDS: Partial<Record<ViewKind, PlayerCommand>> = {
   'play-mode': 'togglePlayMode',
   'play-pause': 'togglePlayPause'
 };
-const PLAYBACK_SYNC_INTERVAL_MS = 1000;
 
 function clonePlaybackState(state: PlaybackState): PlaybackState {
   return JSON.parse(JSON.stringify(state)) as PlaybackState;
@@ -44,10 +44,12 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
   private state: PlaybackState = createInitialPlaybackState();
   private cycledUnitSlots = new Map<ViewKind, Map<string, LoadedCycledUnitSlot>>();
   private warnedSetFunctionUnavailable = false;
-  private playbackSyncTimer: NodeJS.Timeout | null = null;
-  private playbackSyncInFlight = false;
   private lastLinkErrorMessage: string | null = null;
   private unloaded = false;
+  private dependencyUnsubscribe: (() => void) | null = null;
+  private providerEpoch = -1;
+  private providerRevision = -1;
+  private publicationQueue: Promise<void> = Promise.resolve();
 
   async getDefinitions(): Promise<PluginDefinitionsPayload> {
     const pluginVersion = this.pluginVersion || '1.0.0';
@@ -99,6 +101,14 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
     await super.onLoad(ctx);
     this.unloaded = false;
 
+    await this.registerRendererStateChannel(NETEASE_LINK_PLAYBACK_CHANNEL);
+    this.dependencyUnsubscribe = await this.onDependencyState(
+      NETEASE_LINK_PLUGIN_UUID,
+      NETEASE_LINK_PLAYBACK_CHANNEL,
+      async (event: any) => this.handleDependencyPlaybackEvent(event),
+      { replayLatest: true }
+    );
+
     this.registerRendererRpc('getPlaybackState', async () => this.getPlaybackStateForRenderer());
     this.registerRendererRpc('getConnectionStatus', async () => this.getConnectionStatusForRenderer());
     this.registerRendererRpc('sendPlayerCommand', async (command: PlayerCommand) => this.handlePlayerCommand(command));
@@ -134,19 +144,19 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
       );
     }
 
-    this.startPlaybackSync();
-    void this.refreshPlaybackStateFromLink('load', { ensureConnected: true });
   }
 
   async onUnload(): Promise<void> {
     this.unloaded = true;
-    this.clearPlaybackSyncTimer();
+    const unsubscribe = this.dependencyUnsubscribe;
+    this.dependencyUnsubscribe = null;
+    unsubscribe?.();
+    await this.publicationQueue.catch(() => undefined);
     this.cycledUnitSlots.clear();
     await super.onUnload();
   }
 
   private async getPlaybackStateForRenderer(): Promise<PlaybackState> {
-    await this.refreshPlaybackStateFromLink('renderer', { ensureConnected: true });
     return clonePlaybackState(this.state);
   }
 
@@ -171,11 +181,6 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
   private async handlePlayerCommand(command: PlayerCommand): Promise<NeteaseLinkRpcResult> {
     try {
       const result = await this.callLinkApi<NeteaseLinkRpcResult>(NETEASE_LINK_METHODS.sendPlayerCommand, [command]);
-      if (result.success) {
-        setTimeout(() => {
-          void this.refreshPlaybackStateFromLink('command', { ensureConnected: true });
-        }, 160);
-      }
       return result;
     } catch (error) {
       const message = this.describeError(error);
@@ -212,44 +217,60 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
     };
   }
 
-  private startPlaybackSync(): void {
-    this.clearPlaybackSyncTimer();
-    this.playbackSyncTimer = setInterval(() => {
-      void this.refreshPlaybackStateFromLink('poll', { ensureConnected: true });
-    }, PLAYBACK_SYNC_INTERVAL_MS);
-  }
+  private async handleDependencyPlaybackEvent(event: any): Promise<void> {
+    if (this.unloaded) return;
+    const epoch = Number(event?.providerEpoch);
+    const revision = Number(event?.revision);
+    if (!Number.isFinite(epoch) || !Number.isFinite(revision)) return;
+    if (epoch < this.providerEpoch || (epoch === this.providerEpoch && revision <= this.providerRevision)) return;
 
-  private clearPlaybackSyncTimer(): void {
-    if (!this.playbackSyncTimer) return;
-    clearInterval(this.playbackSyncTimer);
-    this.playbackSyncTimer = null;
-  }
+    const higherEpoch = epoch > this.providerEpoch;
+    this.providerEpoch = epoch;
+    this.providerRevision = revision;
 
-  private async refreshPlaybackStateFromLink(
-    source: string,
-    options: { ensureConnected?: boolean }
-  ): Promise<boolean> {
-    if (this.unloaded || this.playbackSyncInFlight) return false;
-
-    this.playbackSyncInFlight = true;
-    const cycledStateBefore = this.getCycledStateSignature();
-    try {
-      const nextState = await this.callLinkApi<PlaybackState>(NETEASE_LINK_METHODS.getPlaybackState, [options]);
-      this.state = this.normalizePlaybackState(nextState);
-      this.lastLinkErrorMessage = null;
-      if (this.getCycledStateSignature() !== cycledStateBefore) {
-        await this.syncAllCycledUnitStates();
-      }
-      return true;
-    } catch (error) {
-      this.applyLinkError(this.describeError(error), source);
-      if (this.getCycledStateSignature() !== cycledStateBefore) {
-        await this.syncAllCycledUnitStates();
-      }
-      return false;
-    } finally {
-      this.playbackSyncInFlight = false;
+    if (event.kind === 'available') return;
+    if (event.kind === 'unavailable') {
+      await this.acceptPlaybackState({
+        ...clonePlaybackState(DEFAULT_PLAYBACK_STATE),
+        lastUpdatedAt: Number(event.timestamp) || Date.now(),
+        connectionError: 'NeteaseMusicLinkEssentials unavailable.'
+      });
+      return;
     }
+    if (higherEpoch && event.kind !== 'snapshot') {
+      this.state = createInitialPlaybackState();
+      return;
+    }
+    if (event.resyncRequired && event.kind !== 'snapshot') {
+      this.state = createInitialPlaybackState();
+      return;
+    }
+    if (event.kind !== 'snapshot' || !this.asRecord(event.payload)) return;
+    await this.acceptPlaybackState(this.normalizePlaybackState(event.payload));
+  }
+
+  private async acceptPlaybackState(nextState: PlaybackState): Promise<void> {
+    if (this.unloaded) return;
+    const previousSignature = this.getCycledStateSignature();
+    this.state = nextState;
+    this.lastLinkErrorMessage = null;
+    if (this.getCycledStateSignature() !== previousSignature) await this.syncAllCycledUnitStates();
+    await this.queueRendererSnapshot(nextState);
+  }
+
+  private queueRendererSnapshot(state: PlaybackState): Promise<void> {
+    if (this.unloaded) return this.publicationQueue;
+    const payload = clonePlaybackState(state);
+    const publish = async () => {
+      if (this.unloaded) return;
+      try {
+        await this.publishRendererState(NETEASE_LINK_PLAYBACK_CHANNEL, { kind: 'snapshot', payload: payload as any });
+      } catch (error) {
+        this.logger.warn('Failed to publish Netease renderer playback state', { error: this.describeError(error) });
+      }
+    };
+    this.publicationQueue = this.publicationQueue.then(publish, publish);
+    return this.publicationQueue;
   }
 
   private normalizePlaybackState(value: PlaybackState): PlaybackState {

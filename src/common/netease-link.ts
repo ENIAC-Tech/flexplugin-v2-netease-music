@@ -1,4 +1,5 @@
 export const NETEASE_LINK_PLUGIN_UUID = '@aspen/netease-music-link-essentials';
+export const NETEASE_LINK_PLAYBACK_CHANNEL = 'playback';
 
 export const NETEASE_LINK_METHODS = {
   getApiInfo: 'getApiInfo',
