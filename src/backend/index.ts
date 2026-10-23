@@ -69,6 +69,7 @@ export default class NeteaseMusicPlugin extends FlexPluginBase {
       units: UNIT_DEFINITIONS.map((unit) => {
         const isCustomUnit = unit.pluginType === 'custom';
         const definition = this.createUnitTemplate({
+          layouts: { default: { preferredSize: { width: 1, height: 1 } } },
           unitId: unit.unitId,
           typeId: unit.typeId,
           name: unit.name,
